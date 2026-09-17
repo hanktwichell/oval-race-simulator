@@ -124,14 +124,24 @@ function riskTolerance(position, fieldSize) {
   return clamp((position - 1) / Math.max(fieldSize - 1, 1), 0, 1);
 }
 
-function decidePitStrategy(driver, position, fieldSize, lapsRemaining) {
+const REPEAT_CAUTION_WINDOW_LAPS = 8;
+const REPEAT_CAUTION_BACKMARKER_POSITION = 30;
+const REPEAT_CAUTION_WORN_TIRE_LAPS = 25;
+
+function decidePitStrategy(driver, position, fieldSize, lapsRemaining, lapsSinceLastCaution) {
   const rt = riskTolerance(position, fieldSize);
   const wear = (driver.tiresLeftLaps + driver.tiresRightLaps) / 2;
   const protectWeight = 0.6 * (settings.trackPositionValue / 50);
 
   const pitDesire = clamp(wear / 35, 0, 1);
   const protectPosition = clamp(1 - rt, 0, 1) * clamp(1 - lapsRemaining / 15, 0, 1);
-  const pitProbability = clamp(pitDesire - protectPosition * protectWeight + rt * 0.1, 0.05, 0.95);
+  let pitProbability = clamp(pitDesire - protectPosition * protectWeight + rt * 0.1, 0.05, 0.95);
+
+  const isRepeatCaution = lapsSinceLastCaution !== null && lapsSinceLastCaution <= REPEAT_CAUTION_WINDOW_LAPS;
+  if (isRepeatCaution) {
+    const isBackmarkerOnWornTires = position >= REPEAT_CAUTION_BACKMARKER_POSITION && wear >= REPEAT_CAUTION_WORN_TIRE_LAPS;
+    pitProbability = isBackmarkerOnWornTires ? clamp(pitProbability * 0.6, 0.05, 0.5) : clamp(pitProbability * 0.05, 0, 0.05);
+  }
 
   if (Math.random() > pitProbability) return "stay";
 
@@ -318,9 +328,11 @@ function checkCautionTrigger(leaderLapIndex) {
 function showCautionModal(lapNumber) {
   const fieldSize = raceState.order.length;
   const lapsRemaining = raceState.totalLaps - lapNumber;
+  const priorCautions = raceState.cautionEvents;
+  const lapsSinceLastCaution = priorCautions.length > 0 ? lapNumber - priorCautions[priorCautions.length - 1].lap : null;
   const decisions = {};
   for (const d of raceState.order) {
-    decisions[d.driverId] = decidePitStrategy(d, d.position, fieldSize, lapsRemaining);
+    decisions[d.driverId] = decidePitStrategy(d, d.position, fieldSize, lapsRemaining, lapsSinceLastCaution);
   }
   raceState.cautionEvents.push({ lap: lapNumber, decisions });
 
@@ -424,7 +436,7 @@ function tick(now) {
 function renderResults(order) {
   const tbody = document.querySelector("#resultsTable tbody");
   tbody.innerHTML = order
-    .map((d, i) => `<tr><td>P${i + 1}</td><td>#${d.number}</td><td>${d.name}</td><td>${d.skill}</td></tr>`)
+    .map((d, i) => `<tr><td>P${i + 1}</td><td>P${d.qualiPosition}</td><td>#${d.number}</td><td>${d.name}</td><td>${d.skill}</td></tr>`)
     .join("");
 }
 
