@@ -1,13 +1,45 @@
 /* ---------- constants ---------- */
-const ANIM_SPEED = 40;               // a 40s lap completes the circle in 1 real second
+const ANIM_SPEED = 40;               // a 40s-equivalent lap completes the loop in 1 real second
 const CAUTION_CHANCE_PER_LAP = 0.04;
-const TRACK_RADIUS = 240;
-const CENTER = 300;
 const GRID_SPACING_DEG = 1.4;
-// Quali/pace lap-time formula: 100 OVR + roll 1.0 -> 40.0s, 40 OVR + roll 0.0 -> 44.0s,
-// derived from score = 0.6*(ovr/100) + 0.4*roll, laptime = A - B*score.
-const LAPTIME_A = 45.263157894736842;
-const LAPTIME_B = 5.263157894736842;
+
+// Rectangular oval, modeled on Indianapolis Motor Speedway (2.5 miles):
+// two long straights (front/back stretch) and two short "chute" straights
+// (the short sides), joined by four near-identical, tight 90-degree turns -
+// a rounded rectangle, distinct from a stadium's two big 180-degree caps.
+// Real proportions (ft): front/back stretch ~3300-3330, short chutes ~660,
+// each turn ~1320 (quarter circle) -> turn radius = 1320*2/pi =~ 840.
+const CENTER_X = 450;
+const CENTER_Y = 230;
+const HALF_STRAIGHT = 250;   // half the front/back stretch length (px)
+const HALF_CHUTE = 50;       // half the short-chute length (px)
+const CORNER_R = 127;        // turn radius (px)
+const STRAIGHT_LEN = 2 * HALF_STRAIGHT;
+const CHUTE_LEN = 2 * HALF_CHUTE;
+const OUTER_HALF_W = HALF_STRAIGHT + CORNER_R;
+const OUTER_HALF_H = HALF_CHUTE + CORNER_R;
+const TOP_Y = CENTER_Y - OUTER_HALF_H;
+const BOTTOM_Y = CENTER_Y + OUTER_HALF_H;
+const LEFT_X = CENTER_X - OUTER_HALF_W;
+const RIGHT_X = CENTER_X + OUTER_HALF_W;
+const TURN_ARC_LEN = (Math.PI / 2) * CORNER_R;
+const LAP_LEN = 2 * STRAIGHT_LEN + 2 * CHUTE_LEN + 4 * TURN_ARC_LEN;
+const STRAIGHT_FRAC = STRAIGHT_LEN / LAP_LEN;
+const CHUTE_FRAC = CHUTE_LEN / LAP_LEN;
+const TURN_FRAC = TURN_ARC_LEN / LAP_LEN;
+// Segment order around the lap, starting on the frontstretch: front straight,
+// turn 1, right chute, turn 2, back straight, turn 3, left chute, turn 4.
+const SEGMENTS = [STRAIGHT_FRAC, TURN_FRAC, CHUTE_FRAC, TURN_FRAC, STRAIGHT_FRAC, TURN_FRAC, CHUTE_FRAC, TURN_FRAC];
+// Where the start/finish line sits along the frontstretch, offset toward turn 1.
+const START_FINISH_FRONT_T = 0.58;
+const SF_OFFSET = START_FINISH_FRONT_T * STRAIGHT_FRAC;
+
+// Quali/pace lap-time formula, scaled 1.25x (2.5mi IMS / 2.0mi baseline) from
+// a 2-mile-track calibration of 100 OVR+roll 1.0 -> 40.0s, 40 OVR+roll 0.0 -> 44.0s,
+// giving 50.0s / 55.0s anchors here. score = 0.6*(ovr/100) + 0.4*roll (quali)
+// or 0.55*skill + 0.45*roll - tire penalty (race pace), laptime = A - B*score.
+const LAPTIME_A = 45.263157894736842 * 1.25;
+const LAPTIME_B = 5.263157894736842 * 1.25;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -149,13 +181,50 @@ function decidePitStrategy(driver, position, fieldSize, lapsRemaining, lapsSince
   return Math.random() < fourTireProbability ? "four" : "two";
 }
 
-/* ---------- SVG track ---------- */
-function polarPoint(theta) {
-  const angle = ((theta - 90) * Math.PI) / 180;
-  return {
-    x: CENTER + TRACK_RADIUS * Math.cos(angle),
-    y: CENTER + TRACK_RADIUS * Math.sin(angle),
-  };
+/* ---------- SVG track (rectangular oval) ---------- */
+// theta is a 0-360 lap-fraction angle; theta=0 is defined to land exactly on
+// the start/finish line (see SF_OFFSET) so lap-completion logic elsewhere,
+// which keys off totalDegrees crossing a multiple of 360, lines up with
+// actually crossing the S/F line physically.
+function trackPoint(theta) {
+  const sExternal = (((theta % 360) + 360) % 360) / 360;
+  const s = (sExternal + SF_OFFSET) % 1;
+
+  let acc = 0;
+  if (s < (acc += STRAIGHT_FRAC)) {
+    const t = (s - (acc - STRAIGHT_FRAC)) / STRAIGHT_FRAC; // frontstretch, left -> right
+    return { x: CENTER_X - HALF_STRAIGHT + t * STRAIGHT_LEN, y: BOTTOM_Y };
+  }
+  if (s < (acc += TURN_FRAC)) {
+    const u = (s - (acc - TURN_FRAC)) / TURN_FRAC; // turn 1, bottom -> right
+    const th = (Math.PI / 2) * (1 - u);
+    return { x: CENTER_X + HALF_STRAIGHT + CORNER_R * Math.cos(th), y: CENTER_Y + HALF_CHUTE + CORNER_R * Math.sin(th) };
+  }
+  if (s < (acc += CHUTE_FRAC)) {
+    const t = (s - (acc - CHUTE_FRAC)) / CHUTE_FRAC; // right chute, bottom -> top
+    return { x: RIGHT_X, y: CENTER_Y + HALF_CHUTE - t * CHUTE_LEN };
+  }
+  if (s < (acc += TURN_FRAC)) {
+    const u = (s - (acc - TURN_FRAC)) / TURN_FRAC; // turn 2, right -> top
+    const th = -u * (Math.PI / 2);
+    return { x: CENTER_X + HALF_STRAIGHT + CORNER_R * Math.cos(th), y: CENTER_Y - HALF_CHUTE + CORNER_R * Math.sin(th) };
+  }
+  if (s < (acc += STRAIGHT_FRAC)) {
+    const t = (s - (acc - STRAIGHT_FRAC)) / STRAIGHT_FRAC; // backstretch, right -> left
+    return { x: RIGHT_X - CORNER_R - t * STRAIGHT_LEN, y: TOP_Y };
+  }
+  if (s < (acc += TURN_FRAC)) {
+    const u = (s - (acc - TURN_FRAC)) / TURN_FRAC; // turn 3, top -> left
+    const th = -Math.PI / 2 - u * (Math.PI / 2);
+    return { x: CENTER_X - HALF_STRAIGHT + CORNER_R * Math.cos(th), y: CENTER_Y - HALF_CHUTE + CORNER_R * Math.sin(th) };
+  }
+  if (s < (acc += CHUTE_FRAC)) {
+    const t = (s - (acc - CHUTE_FRAC)) / CHUTE_FRAC; // left chute, top -> bottom
+    return { x: LEFT_X, y: CENTER_Y - HALF_CHUTE + t * CHUTE_LEN };
+  }
+  const u = (s - acc) / TURN_FRAC; // turn 4, left -> bottom
+  const th = Math.PI - u * (Math.PI / 2);
+  return { x: CENTER_X - HALF_STRAIGHT + CORNER_R * Math.cos(th), y: CENTER_Y + HALF_CHUTE + CORNER_R * Math.sin(th) };
 }
 
 function initTrackSvg(order) {
@@ -163,32 +232,62 @@ function initTrackSvg(order) {
   svg.innerHTML = "";
   const ns = "http://www.w3.org/2000/svg";
 
-  const trackCircle = document.createElementNS(ns, "circle");
-  trackCircle.setAttribute("cx", CENTER);
-  trackCircle.setAttribute("cy", CENTER);
-  trackCircle.setAttribute("r", TRACK_RADIUS);
-  trackCircle.setAttribute("fill", "none");
-  trackCircle.setAttribute("stroke", "#3a4150");
-  trackCircle.setAttribute("stroke-width", "3");
-  svg.appendChild(trackCircle);
+  const frontLeft = `${CENTER_X - HALF_STRAIGHT},${BOTTOM_Y}`;
+  const frontRight = `${CENTER_X + HALF_STRAIGHT},${BOTTOM_Y}`;
+  const rightChuteBottom = `${RIGHT_X},${CENTER_Y + HALF_CHUTE}`;
+  const rightChuteTop = `${RIGHT_X},${CENTER_Y - HALF_CHUTE}`;
+  const backRight = `${CENTER_X + HALF_STRAIGHT},${TOP_Y}`;
+  const backLeft = `${CENTER_X - HALF_STRAIGHT},${TOP_Y}`;
+  const leftChuteTop = `${LEFT_X},${CENTER_Y - HALF_CHUTE}`;
+  const leftChuteBottom = `${LEFT_X},${CENTER_Y + HALF_CHUTE}`;
+  const R = CORNER_R;
+
+  const trackOutline = document.createElementNS(ns, "path");
+  trackOutline.setAttribute(
+    "d",
+    `M ${frontLeft} L ${frontRight} A ${R},${R} 0 0,0 ${rightChuteBottom} L ${rightChuteTop} A ${R},${R} 0 0,0 ${backRight} L ${backLeft} A ${R},${R} 0 0,0 ${leftChuteTop} L ${leftChuteBottom} A ${R},${R} 0 0,0 ${frontLeft} Z`
+  );
+  trackOutline.setAttribute("fill", "none");
+  trackOutline.setAttribute("stroke", "#3a4150");
+  trackOutline.setAttribute("stroke-width", "3");
+  svg.appendChild(trackOutline);
+
+  const sfX = CENTER_X - HALF_STRAIGHT + START_FINISH_FRONT_T * STRAIGHT_LEN;
 
   const startLine = document.createElementNS(ns, "line");
-  startLine.setAttribute("x1", CENTER);
-  startLine.setAttribute("y1", CENTER - TRACK_RADIUS - 12);
-  startLine.setAttribute("x2", CENTER);
-  startLine.setAttribute("y2", CENTER - TRACK_RADIUS + 12);
+  startLine.setAttribute("x1", sfX);
+  startLine.setAttribute("y1", BOTTOM_Y - 16);
+  startLine.setAttribute("x2", sfX);
+  startLine.setAttribute("y2", BOTTOM_Y + 16);
   startLine.setAttribute("stroke", "#ffffff");
   startLine.setAttribute("stroke-width", "5");
   svg.appendChild(startLine);
 
   const startLabel = document.createElementNS(ns, "text");
-  startLabel.setAttribute("x", CENTER);
-  startLabel.setAttribute("y", CENTER - TRACK_RADIUS - 20);
+  startLabel.setAttribute("x", sfX);
+  startLabel.setAttribute("y", BOTTOM_Y + 34);
   startLabel.setAttribute("fill", "#e8eaed");
   startLabel.setAttribute("font-size", "13");
   startLabel.setAttribute("text-anchor", "middle");
   startLabel.textContent = "START / FINISH";
   svg.appendChild(startLabel);
+
+  const turnLabels = [
+    { text: "TURN 1", x: CENTER_X + HALF_STRAIGHT + R * 0.7, y: BOTTOM_Y - R * 0.7 },
+    { text: "TURN 2", x: CENTER_X + HALF_STRAIGHT + R * 0.7, y: TOP_Y + R * 0.7 },
+    { text: "TURN 3", x: CENTER_X - HALF_STRAIGHT - R * 0.7, y: TOP_Y + R * 0.7 },
+    { text: "TURN 4", x: CENTER_X - HALF_STRAIGHT - R * 0.7, y: BOTTOM_Y - R * 0.7 },
+  ];
+  for (const { text, x, y } of turnLabels) {
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", x);
+    label.setAttribute("y", y);
+    label.setAttribute("fill", "#6b7280");
+    label.setAttribute("font-size", "12");
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = text;
+    svg.appendChild(label);
+  }
 
   for (const d of order) {
     const g = document.createElementNS(ns, "g");
@@ -213,7 +312,7 @@ function initTrackSvg(order) {
 function renderDots(order) {
   for (const d of order) {
     const theta = ((d.totalDegrees % 360) + 360) % 360;
-    const { x, y } = polarPoint(theta);
+    const { x, y } = trackPoint(theta);
     d.el.setAttribute("transform", `translate(${x},${y})`);
   }
 }
