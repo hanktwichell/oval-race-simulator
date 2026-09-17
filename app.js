@@ -41,6 +41,17 @@ const SF_OFFSET = START_FINISH_FRONT_T * STRAIGHT_FRAC;
 const LAPTIME_A = 45.263157894736842 * 1.25;
 const LAPTIME_B = 5.263157894736842 * 1.25;
 
+// Race-pace spread cap: skill+luck alone (ignoring tire wear) should only
+// spread the field by this many seconds per lap, not the ~5s the qualifying
+// weighting would otherwise produce - keeps green-flag racing tight while
+// tire wear (added separately, in real seconds) still costs time on top.
+const RACE_PACE_SPREAD_SECONDS = 2.0;
+const RACE_SCORE_MIN = 0.55 * 0.4 + 0.45 * 0; // worst skill (40) + worst luck (0)
+const RACE_SCORE_MAX = 0.55 * 0.99 + 0.45 * 1; // best skill (99) + best luck (1)
+const RACE_PACE_B = RACE_PACE_SPREAD_SECONDS / (RACE_SCORE_MAX - RACE_SCORE_MIN);
+const RACE_PACE_BASE = LAPTIME_A - LAPTIME_B + RACE_PACE_B * RACE_SCORE_MAX; // best case matches quali's best case
+const TIRE_PENALTY_SECONDS_PER_LAP = 0.04;
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 function abbrev(lastName) {
@@ -145,11 +156,10 @@ function computeLapTime(driver) {
   const skillNorm = driver.skill / 100;
   const roll = Math.random();
   const tireWeight = settings.newTireValue / 50;
-  const tirePenaltyPerLap = 0.006 * tireWeight;
   const tireAvg = (driver.tiresLeftLaps + driver.tiresRightLaps) / 2;
-  let score = 0.55 * skillNorm + 0.45 * roll - Math.min(tireAvg, 60) * tirePenaltyPerLap;
-  score = clamp(score, -0.5, 1.3);
-  return clamp(LAPTIME_A - LAPTIME_B * score, 34, 60);
+  const score = clamp(0.55 * skillNorm + 0.45 * roll, RACE_SCORE_MIN, RACE_SCORE_MAX);
+  const tirePenaltySeconds = Math.min(tireAvg, 60) * TIRE_PENALTY_SECONDS_PER_LAP * tireWeight;
+  return clamp(RACE_PACE_BASE - RACE_PACE_B * score + tirePenaltySeconds, 34, 60);
 }
 
 function riskTolerance(position, fieldSize) {
@@ -318,8 +328,23 @@ function renderDots(order) {
 }
 
 /* ---------- leaderboard ---------- */
+// Interval to the leader: full laps down if lapped, otherwise a time gap
+// estimated from the trailing distance at the leader's current pace - the
+// same approximation real-time "interval" overlays use between timing loops.
+function formatGap(leader, driver) {
+  if (driver === leader) return "Leader";
+  const degBehind = leader.totalDegrees - driver.totalDegrees;
+  const lapsBehind = Math.floor(degBehind / 360);
+  if (lapsBehind >= 1) return `-${lapsBehind} Lap${lapsBehind > 1 ? "s" : ""}`;
+  // In-race (fictional) seconds behind, not animation wall-clock seconds:
+  // a full lap (360deg) takes the leader's currentLapTime fictional seconds.
+  const gapSeconds = (degBehind / 360) * leader.currentLapTime;
+  return `+${gapSeconds.toFixed(1)}s`;
+}
+
 function renderLeaderboard(order) {
   const el = document.getElementById("leaderboard");
+  const leader = order[0];
   el.innerHTML = order
     .map(
       (d, i) => `
@@ -328,6 +353,7 @@ function renderLeaderboard(order) {
       <span class="dot" style="background:${d.color}"></span>
       <span class="num">#${d.number}</span>
       <span class="lname">${d.lastName}</span>
+      <span class="gap">${formatGap(leader, d)}</span>
     </li>`
     )
     .join("");
@@ -542,7 +568,8 @@ function renderResults(order) {
 function renderStrategyTable(order, cautionEvents) {
   const headRow = document.querySelector("#strategyTable thead tr");
   headRow.innerHTML =
-    `<th>Pos</th><th>Car</th>` + cautionEvents.map((e) => `<th>Caution L${e.lap}</th>`).join("");
+    `<th>Pos</th><th>Start</th><th>+/-</th><th>Car</th>` +
+    cautionEvents.map((e) => `<th>Caution L${e.lap}</th>`).join("");
 
   const symbol = { stay: "-", two: "2", four: "4" };
   const clsFor = { stay: "", two: "pit-2", four: "pit-4" };
@@ -550,13 +577,21 @@ function renderStrategyTable(order, cautionEvents) {
   const tbody = document.querySelector("#strategyTable tbody");
   tbody.innerHTML = order
     .map((d, i) => {
+      const finish = i + 1;
+      const change = d.qualiPosition - finish; // positive = gained positions
+      const changeHtml =
+        change > 0
+          ? `<span class="gain">&#9650; ${change}</span>`
+          : change < 0
+          ? `<span class="loss">&#9660; ${Math.abs(change)}</span>`
+          : `<span class="even">&mdash;</span>`;
       const cells = cautionEvents
         .map((e) => {
           const decision = e.decisions[d.driverId] || "stay";
           return `<td class="${clsFor[decision]}">${symbol[decision]}</td>`;
         })
         .join("");
-      return `<tr><td>P${i + 1}</td><td>#${d.number}</td>${cells}</tr>`;
+      return `<tr><td>P${finish}</td><td>P${d.qualiPosition}</td><td>${changeHtml}</td><td>#${d.number}</td>${cells}</tr>`;
     })
     .join("");
 }

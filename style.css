@@ -68,6 +68,9 @@ th { position: sticky; top: 0; background: #23272f; color: var(--text-dim); font
 tr:last-child td { border-bottom: none; }
 td.pit-2 { color: var(--caution); font-weight: 700; }
 td.pit-4 { color: var(--danger); font-weight: 700; }
+.gain { color: var(--accent); font-weight: 700; }
+.loss { color: var(--danger); font-weight: 700; }
+.even { color: var(--text-dim); }
 
 /* ---- race view ---- */
 .race-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
@@ -88,6 +91,7 @@ td.pit-4 { color: var(--danger); font-weight: 700; }
 .leaderboard li .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .leaderboard li .num { width: 32px; font-weight: 700; }
 .leaderboard li .lname { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard li .gap { width: 64px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-dim); flex-shrink: 0; }
 
 /* ---- modal ---- */
 .modal {
