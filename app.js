@@ -1,9 +1,33 @@
 /* ---------- constants ---------- */
-const ANIM_SPEED = 40;               // a 40s lap completes the circle in 1 real second
+const ANIM_SPEED = 40;               // a 40s lap completes the loop in 1 real second
 const CAUTION_CHANCE_PER_LAP = 0.04;
-const TRACK_RADIUS = 240;
 const CENTER = 300;
 const GRID_SPACING_DEG = 1.4;
+
+// D-shaped oval, modeled on the historic 2-mile Auto Club Speedway (1997-2023):
+// a straight backstretch opposite one continuous sweeping curve that carries
+// turns 3-4, the frontstretch, and turns 1-2 as a single rounded arc - the
+// flat-one-side / round-other-side silhouette that makes it a "D" rather than
+// a symmetric stadium oval.
+const OVAL_RX = 260;      // curve horizontal half-span (px) - also half the backstretch length
+const OVAL_RY = 340;      // curve depth/bulge (px) - sized so straight:bulge is close to Auto Club's real ~2500:1650 ft ratio
+const OVAL_TOP_Y = 90;    // y of the backstretch (curve bulges downward from here)
+const OVAL_LEFT_X = CENTER - OVAL_RX;
+const OVAL_RIGHT_X = CENTER + OVAL_RX;
+const STRAIGHT_LEN = 2 * OVAL_RX;
+// Ramanujan approximation of a half-ellipse's arc length, for pacing the
+// straight vs. the curve proportionally to their real length.
+const CURVE_LEN = (() => {
+  const a = OVAL_RX, b = OVAL_RY;
+  const h = ((a - b) / (a + b)) ** 2;
+  const fullPerimeter = Math.PI * (a + b) * (1 + (3 * h) / (10 + Math.sqrt(4 - 3 * h)));
+  return fullPerimeter / 2;
+})();
+const STRAIGHT_FRACTION = STRAIGHT_LEN / (STRAIGHT_LEN + CURVE_LEN);
+// Where the start/finish line sits along the curve (0 = just past turn 4
+// exiting the backstretch, 1 = turn 2 exit back onto the backstretch).
+// Real S/F line sits just past turn 4, early in the frontstretch sweep.
+const START_FINISH_CURVE_U = 0.42;
 // Quali/pace lap-time formula: 100 OVR + roll 1.0 -> 40.0s, 40 OVR + roll 0.0 -> 44.0s,
 // derived from score = 0.6*(ovr/100) + 0.4*roll, laptime = A - B*score.
 const LAPTIME_A = 45.263157894736842;
@@ -149,13 +173,30 @@ function decidePitStrategy(driver, position, fieldSize, lapsRemaining, lapsSince
   return Math.random() < fourTireProbability ? "four" : "two";
 }
 
-/* ---------- SVG track ---------- */
-function polarPoint(theta) {
-  const angle = ((theta - 90) * Math.PI) / 180;
+/* ---------- SVG track (D-oval) ---------- */
+// theta is a 0-360 lap-fraction angle, kept for compatibility with the
+// grid-spacing / totalDegrees math elsewhere - it no longer maps to a
+// literal circular angle, just position-around-the-loop.
+function trackPoint(theta) {
+  const s = (((theta % 360) + 360) % 360) / 360;
+  if (s < STRAIGHT_FRACTION) {
+    const t = s / STRAIGHT_FRACTION; // 0..1 along the backstretch, right -> left
+    return { x: OVAL_RIGHT_X - t * STRAIGHT_LEN, y: OVAL_TOP_Y };
+  }
+  const u = (s - STRAIGHT_FRACTION) / (1 - STRAIGHT_FRACTION); // 0..1 along the curve, left -> bottom -> right
   return {
-    x: CENTER + TRACK_RADIUS * Math.cos(angle),
-    y: CENTER + TRACK_RADIUS * Math.sin(angle),
+    x: CENTER - OVAL_RX * Math.cos(u * Math.PI),
+    y: OVAL_TOP_Y + OVAL_RY * Math.sin(u * Math.PI),
   };
+}
+
+// Tangent-perpendicular direction at a point on the curve, so the S/F line
+// can be drawn across the track rather than always vertical.
+function curveNormal(u) {
+  const dx = OVAL_RX * Math.PI * Math.sin(u * Math.PI);
+  const dy = OVAL_RY * Math.PI * Math.cos(u * Math.PI);
+  const len = Math.hypot(dx, dy) || 1;
+  return { x: -dy / len, y: dx / len };
 }
 
 function initTrackSvg(order) {
@@ -163,27 +204,31 @@ function initTrackSvg(order) {
   svg.innerHTML = "";
   const ns = "http://www.w3.org/2000/svg";
 
-  const trackCircle = document.createElementNS(ns, "circle");
-  trackCircle.setAttribute("cx", CENTER);
-  trackCircle.setAttribute("cy", CENTER);
-  trackCircle.setAttribute("r", TRACK_RADIUS);
-  trackCircle.setAttribute("fill", "none");
-  trackCircle.setAttribute("stroke", "#3a4150");
-  trackCircle.setAttribute("stroke-width", "3");
-  svg.appendChild(trackCircle);
+  const trackOutline = document.createElementNS(ns, "path");
+  trackOutline.setAttribute(
+    "d",
+    `M ${OVAL_RIGHT_X},${OVAL_TOP_Y} L ${OVAL_LEFT_X},${OVAL_TOP_Y} A ${OVAL_RX},${OVAL_RY} 0 0,0 ${OVAL_RIGHT_X},${OVAL_TOP_Y}`
+  );
+  trackOutline.setAttribute("fill", "none");
+  trackOutline.setAttribute("stroke", "#3a4150");
+  trackOutline.setAttribute("stroke-width", "3");
+  svg.appendChild(trackOutline);
+
+  const sfPoint = trackPoint(STRAIGHT_FRACTION * 360 + START_FINISH_CURVE_U * (1 - STRAIGHT_FRACTION) * 360);
+  const sfNormal = curveNormal(START_FINISH_CURVE_U);
 
   const startLine = document.createElementNS(ns, "line");
-  startLine.setAttribute("x1", CENTER);
-  startLine.setAttribute("y1", CENTER - TRACK_RADIUS - 12);
-  startLine.setAttribute("x2", CENTER);
-  startLine.setAttribute("y2", CENTER - TRACK_RADIUS + 12);
+  startLine.setAttribute("x1", sfPoint.x - sfNormal.x * 16);
+  startLine.setAttribute("y1", sfPoint.y - sfNormal.y * 16);
+  startLine.setAttribute("x2", sfPoint.x + sfNormal.x * 16);
+  startLine.setAttribute("y2", sfPoint.y + sfNormal.y * 16);
   startLine.setAttribute("stroke", "#ffffff");
   startLine.setAttribute("stroke-width", "5");
   svg.appendChild(startLine);
 
   const startLabel = document.createElementNS(ns, "text");
-  startLabel.setAttribute("x", CENTER);
-  startLabel.setAttribute("y", CENTER - TRACK_RADIUS - 20);
+  startLabel.setAttribute("x", sfPoint.x + sfNormal.x * 30);
+  startLabel.setAttribute("y", sfPoint.y + sfNormal.y * 30);
   startLabel.setAttribute("fill", "#e8eaed");
   startLabel.setAttribute("font-size", "13");
   startLabel.setAttribute("text-anchor", "middle");
@@ -213,7 +258,7 @@ function initTrackSvg(order) {
 function renderDots(order) {
   for (const d of order) {
     const theta = ((d.totalDegrees % 360) + 360) % 360;
-    const { x, y } = polarPoint(theta);
+    const { x, y } = trackPoint(theta);
     d.el.setAttribute("transform", `translate(${x},${y})`);
   }
 }
